@@ -8,8 +8,9 @@ license = "MIT"
 packages = [{include = "premier_league_predictor"}]
 
 [tool.poetry.dependencies]
-python = "^3.8.1"
+python = ">=3.10,<4.0.0"
 pandas = "^2.0.0"
+scikit-learn = "^1.7.1"
 
 [tool.poetry.group.dev.dependencies]
 black = "^23.0.0"
@@ -21,8 +22,3 @@ build-backend = "poetry.core.masonry.api"
 [tool.black]
 line-length = 88
 target-version = ['py38']
-
-[tool.mypy]
-python_version = "3.8"
-warn_return_any = true
-warn_unused_configs = true
