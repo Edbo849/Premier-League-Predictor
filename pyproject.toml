@@ -1,0 +1,28 @@
+[tool.poetry]
+name = "premier-league-predictor"
+version = "0.1.0"
+description = "A Premier League match prediction system"
+authors = ["Your Name <your.email@example.com>"]
+readme = "README.md"
+license = "MIT"
+packages = [{include = "premier_league_predictor"}]
+
+[tool.poetry.dependencies]
+python = "^3.8.1"
+pandas = "^2.0.0"
+
+[tool.poetry.group.dev.dependencies]
+black = "^23.0.0"
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.black]
+line-length = 88
+target-version = ['py38']
+
+[tool.mypy]
+python_version = "3.8"
+warn_return_any = true
+warn_unused_configs = true
