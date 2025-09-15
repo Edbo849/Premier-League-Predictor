@@ -196,7 +196,7 @@ def main():
     combined["team"] = combined["team"].map(mapping)
 
     # Display results
-    print(f"Precision: {precision}")
+    print(f"Precision: {precision:.2f}")
     print(f"Predictions shape: {combined.shape}")
     print(combined.head())
 
