@@ -54,6 +54,25 @@ def clean_data(data: pd.DataFrame) -> pd.DataFrame:
     # Creates a numeric code for each day of the week (0=Monday, 6=Sunday)
     data["day_code"] = data["date"].dt.day_of_week
 
+    # Goal-based features
+    data["goal_diff"] = data["gf"] - data["ga"]
+    data["xg_diff"] = data["xg"] - data["xga"]
+
+    # Shooting efficiency metrics
+    data["shot_accuracy"] = data["sot"] / data["sh"]
+    data["shot_accuracy"] = data["shot_accuracy"].fillna(0)
+
+    data["goals_per_shot"] = data["gf"] / data["sh"]
+    data["goals_per_shot"] = data["goals_per_shot"].fillna(0)
+
+    # Expected goals efficiency
+    data["xg_efficiency"] = data["gf"] / data["xg"]
+    data["xg_efficiency"] = data["xg_efficiency"].fillna(0)
+
+    # Defensive metrics
+    data["shots_conceded_per_ga"] = data["xga"] / data["ga"]
+    data["shots_conceded_per_ga"] = data["shots_conceded_per_ga"].fillna(0)
+
     return data
 
 
@@ -157,11 +176,34 @@ def main():
     # Create binary target variable: 1 for wins, 0 for draws/losses
     matches["target"] = (matches["result"] == "W").astype("int")
 
-    # Define columns for calculating rolling averages (team performance metrics)
-    cols = ["gf", "ga", "sh", "sot", "dist", "fk", "pk", "pkatt", "xg"]
-    new_cols = [f"{c}_rolling" for c in cols]
+    matches = add_form_features(matches)
+    matches = add_opposition_features(matches)
 
-    # Calculate rolling averages for each team separately
+    # Enhanced feature set
+    base_cols = [
+        "gf",
+        "ga",
+        "sh",
+        "sot",
+        "dist",
+        "fk",
+        "pk",
+        "pkatt",
+        "xg",
+        "xga",
+        "poss",
+    ]
+    engineered_cols = [
+        "goal_diff",
+        "xg_diff",
+        "shot_accuracy",
+        "goals_per_shot",
+        "xg_efficiency",
+    ]
+
+    all_feature_cols = base_cols + engineered_cols
+
+    # Create rolling averages
     matches_rolling = matches.groupby("team").apply(
         lambda x: rolling_averages(x, cols, new_cols)
     )
@@ -178,19 +220,22 @@ def main():
     # Generate predictions and calculate precision
     combined, precision = make_predictions(matches_rolling, predictors)
 
-    # Merge predictions with additional match information
-    combined = combined.merge(
-        matches_rolling[
-            [
-                "date",
-                "opponent",
-                "result",
-            ]
-        ],
-        left_index=True,
-        right_index=True,
-        suffixes=("", "_matches_rolling"),  # Avoid column name conflicts
-    )
+    all_predictors = [
+        "venue_code",
+        "opp_code",
+        "hour",
+        "day_code",
+        "form_5",
+        "win_rate_10",
+        "goals_last_3",
+        "opp_avg_xg",
+        "opp_avg_xga",
+        "opp_avg_gf",
+        "opp_avg_ga",
+    ] + rolling_cols
+
+    # Select best features
+    best_predictors = select_best_features(matches_rolling, all_predictors, "target")
 
     # Apply team name mapping for standardisation
     combined["team"] = combined["team"].map(mapping)
