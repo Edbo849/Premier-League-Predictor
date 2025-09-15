@@ -97,7 +97,13 @@ def train_model(matches: pd.DataFrame, predictors: List[str]) -> RandomForestCla
         RandomForestClassifier: Trained Random Forest model.
     """
     # Initialise Random Forest with specific parameters for stability and performance
-    rf = RandomForestClassifier(n_estimators=50, min_samples_split=10, random_state=1)
+    rf = RandomForestClassifier(
+        n_estimators=100,  # More trees for better performance
+        min_samples_split=5,  # Reduced to capture more patterns
+        max_depth=10,  # Prevent overfitting
+        random_state=1,
+        class_weight="balanced",  # Handle class imbalance
+    )
 
     # Use data before 2022 for training to avoid data leakage
     train = matches[matches["date"] < "2022-01-01"]
@@ -152,7 +158,7 @@ def main():
     matches["target"] = (matches["result"] == "W").astype("int")
 
     # Define columns for calculating rolling averages (team performance metrics)
-    cols = ["gf", "ga", "sh", "sot", "dist", "fk", "pk", "pkatt"]
+    cols = ["gf", "ga", "sh", "sot", "dist", "fk", "pk", "pkatt", "xg"]
     new_cols = [f"{c}_rolling" for c in cols]
 
     # Calculate rolling averages for each team separately
