@@ -8,8 +8,9 @@ license = "MIT"
 packages = [{include = "premier_league_predictor"}]
 
 [tool.poetry.dependencies]
-python = ">=3.10,<4.0.0"
+python = ">=3.10,<3.13"
 pandas = "^2.0.0"
+numpy = "1.26.0"
 scikit-learn = "^1.7.1"
 
 [tool.poetry.group.dev.dependencies]

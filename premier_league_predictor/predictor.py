@@ -5,6 +5,7 @@ This module will contain the core functionality for predicting
 Premier League match outcomes.
 """
 
+from typing import List, Tuple
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, precision_score
 import pandas as pd
@@ -29,7 +30,7 @@ def clean_data(data: pd.DataFrame) -> pd.DataFrame:
     data["opp_code"] = data["opponent"].astype("category").cat.codes
 
     # Converts time into just hour e.g 16:30 -> 16
-    data["hour"] = data["times"].str.replace(":.+", "", regex=True).astype("int")
+    data["hour"] = data["time"].str.replace(":.+", "", regex=True).astype("int")
 
     # Creates a code for each day of the week
     data["day_code"] = data["date"].dt.day_of_week
@@ -37,14 +38,19 @@ def clean_data(data: pd.DataFrame) -> pd.DataFrame:
     return data
 
 
-def rolling_averages(group: pd.DataFrame, cols: list, new_cols: list) -> pd.DataFrame:
+def rolling_averages(
+    group: pd.DataFrame, cols: List[str], new_cols: List[str]
+) -> pd.DataFrame:
     """Calculates rolling averages for specified columns.
+
     Args:
-        group (pd.DataFrame): Grouped match data for a team.
-        cols (list): List of columns to calculate rolling averages for.
-        new_cols (list): List of new column names for the rolling averages.
+        group (pd.DataFrame): DataFrame for a single team group.
+        cols (List[str]): List of columns to calculate rolling averages for.
+        new_cols (List[str]): List of new column names for the rolling averages.
+
     Returns:
-        pd.DataFrame: DataFrame with rolling averages added."""
+        pd.DataFrame: DataFrame with rolling averages added.
+    """
 
     # Sort by date
     group = group.sort_values("date")
@@ -61,32 +67,49 @@ def rolling_averages(group: pd.DataFrame, cols: list, new_cols: list) -> pd.Data
     return group
 
 
-def train_model(matches: pd.DataFrame) -> None:
-    """Trains the Random Forest model on the match data.
+def train_model(matches: pd.DataFrame, predictors: List[str]) -> RandomForestClassifier:
+    """Trains and returns the Random Forest model.
+
     Args:
-        matches (pd.DataFrame): Cleaned match data with target variable.
+        matches (pd.DataFrame): Match data with features and target.
+        predictors (List[str]): List of feature columns to use for training.
+
     Returns:
-        None
+        RandomForestClassifier: Trained Random Forest model.
     """
-
-    # Initialise the model
     rf = RandomForestClassifier(n_estimators=50, min_samples_split=10, random_state=1)
-
-    # Data to train
     train = matches[matches["date"] < "2022-01-01"]
-
-    # Set predictors for model
-    predictors = ["venue_code", "opp_code", "hour", "day_code"]
-
-    # Train the model
     rf.fit(train[predictors], train["target"])
+    return rf
+
+
+def make_predictions(
+    matches: pd.DataFrame, predictors: List[str]
+) -> Tuple[pd.DataFrame, float]:
+    """Makes predictions using trained model.
+
+    Args:
+        matches (pd.DataFrame): Match data with features and target.
+        predictors (List[str]): List of feature columns to use for prediction.
+
+    Returns:
+        Tuple[pd.DataFrame, float]: Combined predictions and actual results, and precision score.
+    """
+    rf = train_model(matches, predictors)
+    test = matches[matches["date"] > "2022-01-01"]
+    preds = rf.predict(test[predictors])
+    combined = pd.DataFrame(
+        dict(actual=test["target"], predicted=preds), index=test.index
+    )
+    precision = float(precision_score(test["target"], preds))
+    return combined, precision
 
 
 def main():
     """Main entry point for the application."""
 
     # Read the csv file and identify the index column
-    matches = pd.read_csv("matches.csv", index_col=0)
+    matches = pd.read_csv("premier_league_predictor/matches.csv", index_col=0)
 
     # Clean the data
     matches = clean_data(matches)
@@ -94,23 +117,39 @@ def main():
     # Set target for ML model
     matches["target"] = (matches["result"] == "W").astype("int")
 
-    # Define group for rolling averages
-    group_matches = matches.groupby("team")
-
-    group = group_matches.get_group("Manchester City").sort_values("date")
-
     # Define columns for rolling averages
     cols = ["gf", "ga", "sh", "sot", "dist", "fk", "pk", "pkatt"]
     new_cols = [f"{c}_rolling" for c in cols]
 
+    # Calculate rolling averages for each team
     matches_rolling = matches.groupby("team").apply(
         lambda x: rolling_averages(x, cols, new_cols)
     )
     matches_rolling = matches_rolling.droplevel("team")
     matches_rolling.index = pd.RangeIndex(start=0, stop=matches_rolling.shape[0])
 
-    # Train the model
-    train_model(matches_rolling)
+    # Define predictors (include rolling averages)
+    predictors = ["venue_code", "opp_code", "hour", "day_code"] + new_cols
+
+    # Make predictions and get results
+    combined, precision = make_predictions(matches_rolling, predictors)
+
+    combined = combined.merge(
+        matches_rolling[
+            [
+                "date",
+                "team",
+                "opponent",
+                "result",
+            ]
+        ],
+        left_index=True,
+        right_index=True,
+    )
+
+    print(f"Precision: {precision}")
+    print(f"Predictions shape: {combined.shape}")
+    print(combined.head())
 
 
 if __name__ == "__main__":
