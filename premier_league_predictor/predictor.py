@@ -11,6 +11,25 @@ from sklearn.metrics import accuracy_score, precision_score
 import pandas as pd
 
 
+class MissingDict(dict):
+    """Dictionary that returns the key itself if the key is not found."""
+
+    __missing__ = lambda self, key: key
+
+
+# Map team names from data source to standardised names
+map_values = {
+    "Brighton and Hove Albion": "Brighton",
+    "Manchester United": "Manchester Utd",
+    "Newcastle United": "Newcastle Utd",
+    "Tottenham Hotspur": "Tottenham",
+    "West Ham United": "West Ham",
+    "Wolverhampton Wanderers": "Wolves",
+}
+# Create mapping dictionary that returns original name if not found in map_values
+mapping = MissingDict(**map_values)
+
+
 def clean_data(data: pd.DataFrame) -> pd.DataFrame:
     """Cleans the input data for model training.
 
@@ -20,19 +39,19 @@ def clean_data(data: pd.DataFrame) -> pd.DataFrame:
     Returns:
         pd.DataFrame: Cleaned match data.
     """
-    # Convert date from string to datetime
+    # Convert date from string to datetime for proper date operations
     data["date"] = pd.to_datetime(data["date"])
 
-    # Creates a code for Home/Away
+    # Creates a numeric code for Home/Away venue (0 or 1)
     data["venue_code"] = data["venue"].astype("category").cat.codes
 
-    # Creates a code for each opposition
+    # Creates a numeric code for each opposition team
     data["opp_code"] = data["opponent"].astype("category").cat.codes
 
-    # Converts time into just hour e.g 16:30 -> 16
+    # Converts time into just hour e.g 16:30 -> 16 for kick-off time feature
     data["hour"] = data["time"].str.replace(":.+", "", regex=True).astype("int")
 
-    # Creates a code for each day of the week
+    # Creates a numeric code for each day of the week (0=Monday, 6=Sunday)
     data["day_code"] = data["date"].dt.day_of_week
 
     return data
@@ -52,16 +71,16 @@ def rolling_averages(
         pd.DataFrame: DataFrame with rolling averages added.
     """
 
-    # Sort by date
+    # Sort by date to ensure chronological order for rolling averages
     group = group.sort_values("date")
 
-    # Calculate rolling averages
+    # Calculate rolling averages over last 3 matches (excluding current match)
     rolling_stats = group[cols].rolling(3, closed="left").mean()
 
-    # Rename columns
+    # Add rolling average columns to the group DataFrame
     group[new_cols] = rolling_stats
 
-    # Drop rows with NaN values in new columns
+    # Drop rows with NaN values in new columns (first few matches won't have enough history)
     group = group.dropna(subset=new_cols)
 
     return group
@@ -77,8 +96,13 @@ def train_model(matches: pd.DataFrame, predictors: List[str]) -> RandomForestCla
     Returns:
         RandomForestClassifier: Trained Random Forest model.
     """
+    # Initialise Random Forest with specific parameters for stability and performance
     rf = RandomForestClassifier(n_estimators=50, min_samples_split=10, random_state=1)
+
+    # Use data before 2022 for training to avoid data leakage
     train = matches[matches["date"] < "2022-01-01"]
+
+    # Train the model on predictor features and target outcomes
     rf.fit(train[predictors], train["target"])
     return rf
 
@@ -95,12 +119,22 @@ def make_predictions(
     Returns:
         Tuple[pd.DataFrame, float]: Combined predictions and actual results, and precision score.
     """
+    # Train the model using historical data
     rf = train_model(matches, predictors)
+
+    # Use data from 2022 onwards for testing
     test = matches[matches["date"] > "2022-01-01"]
+
+    # Generate predictions for the test set
     preds = rf.predict(test[predictors])
+
+    # Create DataFrame combining actual results, predictions, and team names
     combined = pd.DataFrame(
-        dict(actual=test["target"], predicted=preds), index=test.index
+        dict(actual=test["target"], predicted=preds, team=test["team"]),
+        index=test.index,
     )
+
+    # Calculate precision score (true positives / (true positives + false positives))
     precision = float(precision_score(test["target"], preds))
     return combined, precision
 
@@ -108,45 +142,54 @@ def make_predictions(
 def main():
     """Main entry point for the application."""
 
-    # Read the csv file and identify the index column
+    # Read the CSV file from the correct path (same directory as script)
     matches = pd.read_csv("premier_league_predictor/matches.csv", index_col=0)
 
-    # Clean the data
+    # Clean and prepare the data for machine learning
     matches = clean_data(matches)
 
-    # Set target for ML model
+    # Create binary target variable: 1 for wins, 0 for draws/losses
     matches["target"] = (matches["result"] == "W").astype("int")
 
-    # Define columns for rolling averages
+    # Define columns for calculating rolling averages (team performance metrics)
     cols = ["gf", "ga", "sh", "sot", "dist", "fk", "pk", "pkatt"]
     new_cols = [f"{c}_rolling" for c in cols]
 
-    # Calculate rolling averages for each team
+    # Calculate rolling averages for each team separately
     matches_rolling = matches.groupby("team").apply(
         lambda x: rolling_averages(x, cols, new_cols)
     )
+
+    # Remove the multi-level index created by groupby
     matches_rolling = matches_rolling.droplevel("team")
+
+    # Reset index to simple range index for easier data manipulation
     matches_rolling.index = pd.RangeIndex(start=0, stop=matches_rolling.shape[0])
 
-    # Define predictors (include rolling averages)
+    # Define all predictor features (static features + rolling averages)
     predictors = ["venue_code", "opp_code", "hour", "day_code"] + new_cols
 
-    # Make predictions and get results
+    # Generate predictions and calculate precision
     combined, precision = make_predictions(matches_rolling, predictors)
 
+    # Merge predictions with additional match information
     combined = combined.merge(
         matches_rolling[
             [
                 "date",
-                "team",
                 "opponent",
                 "result",
             ]
         ],
         left_index=True,
         right_index=True,
+        suffixes=("", "_matches_rolling"),  # Avoid column name conflicts
     )
 
+    # Apply team name mapping for standardisation
+    combined["team"] = combined["team"].map(mapping)
+
+    # Display results
     print(f"Precision: {precision}")
     print(f"Predictions shape: {combined.shape}")
     print(combined.head())
