@@ -117,11 +117,14 @@ def train_model(matches: pd.DataFrame, predictors: List[str]) -> RandomForestCla
     """
     # Initialise Random Forest with specific parameters for stability and performance
     rf = RandomForestClassifier(
-        n_estimators=100,  # More trees for better performance
-        min_samples_split=5,  # Reduced to capture more patterns
-        max_depth=10,  # Prevent overfitting
+        n_estimators=200,  # More trees
+        max_depth=15,  # Deeper trees
+        min_samples_split=8,
+        min_samples_leaf=4,
         random_state=1,
-        class_weight="balanced",  # Handle class imbalance
+        class_weight="balanced",
+        bootstrap=True,
+        oob_score=True,  # Out-of-bag scoring
     )
 
     # Use data before 2022 for training to avoid data leakage
@@ -164,13 +167,115 @@ def make_predictions(
     return combined, precision
 
 
+def add_opposition_features(data: pd.DataFrame) -> pd.DataFrame:
+    """Add features about opposition strength."""
+
+    # Calculate team strength metrics (only use existing columns)
+    team_stats = (
+        data.groupby("team")
+        .agg({"xg": "mean", "xga": "mean", "gf": "mean", "ga": "mean"})
+        .reset_index()
+    )
+
+    team_stats.columns = [
+        "opponent",
+        "opp_avg_xg",
+        "opp_avg_xga",
+        "opp_avg_gf",
+        "opp_avg_ga",
+    ]
+
+    # Merge opposition stats
+    data = data.merge(team_stats, on="opponent", how="left")
+
+    return data
+
+
+def add_form_features(data: pd.DataFrame) -> pd.DataFrame:
+    """Add recent form and momentum indicators.
+    Args:
+        data (pd.DataFrame): Match data.
+    Returns:
+        pd.DataFrame: Match data with form features added.
+    """
+
+    # Recent results streak
+    data["points"] = data["result"].map({"W": 3, "D": 1, "L": 0})
+
+    # Sort by team and date to ensure proper rolling calculations
+    data = data.sort_values(["team", "date"])
+
+    # Rolling form over last 5 games - use transform to maintain original index
+    data["form_5"] = data.groupby("team")["points"].transform(
+        lambda x: x.rolling(5, closed="left").sum()
+    )
+
+    # Win percentage in last 10 games - use transform
+    data["win_rate_10"] = data.groupby("team")["target"].transform(
+        lambda x: x.rolling(10, closed="left").mean()
+    )
+
+    # Goal scoring form - use transform
+    data["goals_last_3"] = data.groupby("team")["gf"].transform(
+        lambda x: x.rolling(3, closed="left").sum()
+    )
+
+    return data
+
+
+def create_multiple_rolling_averages(
+    group: pd.DataFrame, cols: List[str]
+) -> pd.DataFrame:
+    """Create rolling averages with different window sizes.
+    Args:
+        group (pd.DataFrame): DataFrame for a single team group.
+        cols (List[str]): List of columns to calculate rolling averages for.
+    Returns:
+        pd.DataFrame: DataFrame with multiple rolling averages added."""
+
+    group = group.sort_values("date")
+
+    # Different window sizes for different insights
+    for window in [3, 5, 10]:
+        rolling_stats = group[cols].rolling(window, closed="left").mean()
+        new_cols = [f"{c}_rolling_{window}" for c in cols]
+        group[new_cols] = rolling_stats
+
+    return group
+
+
+def select_best_features(
+    matches: pd.DataFrame, predictors: List[str], target: str
+) -> List[str]:
+    """Select the most important features using Random Forest feature importance.
+    Args:
+        matches (pd.DataFrame): Match data with features and target.
+        predictors (List[str]): List of feature columns to evaluate.
+        target (str): Target column name.
+    Returns:
+        List[str]: List of top 20 important features.
+    """
+
+    # Train a model to get feature importance
+    rf = RandomForestClassifier(n_estimators=100, random_state=1)
+    train_data = matches[matches["date"] < "2022-01-01"]
+
+    rf.fit(train_data[predictors], train_data[target])
+
+    # Get feature importance
+    importance_df = pd.DataFrame(
+        {"feature": predictors, "importance": rf.feature_importances_}
+    ).sort_values("importance", ascending=False)
+
+    # Return top 20 features
+    return importance_df.head(20)["feature"].tolist()
+
+
 def main():
-    """Main entry point for the application."""
+    """Enhanced main function with all improvements."""
 
-    # Read the CSV file from the correct path (same directory as script)
+    # Read and clean data
     matches = pd.read_csv("premier_league_predictor/matches.csv", index_col=0)
-
-    # Clean and prepare the data for machine learning
     matches = clean_data(matches)
 
     # Create binary target variable: 1 for wins, 0 for draws/losses
@@ -205,20 +310,18 @@ def main():
 
     # Create rolling averages
     matches_rolling = matches.groupby("team").apply(
-        lambda x: rolling_averages(x, cols, new_cols)
+        lambda x: create_multiple_rolling_averages(x, all_feature_cols)
     )
 
-    # Remove the multi-level index created by groupby
+    # Remove multi-index and reset
     matches_rolling = matches_rolling.droplevel("team")
-
-    # Reset index to simple range index for easier data manipulation
     matches_rolling.index = pd.RangeIndex(start=0, stop=matches_rolling.shape[0])
 
-    # Define all predictor features (static features + rolling averages)
-    predictors = ["venue_code", "opp_code", "hour", "day_code"] + new_cols
-
-    # Generate predictions and calculate precision
-    combined, precision = make_predictions(matches_rolling, predictors)
+    # Define all possible predictors (updated with new opposition features)
+    rolling_cols = []
+    for col in all_feature_cols:
+        for window in [3, 5, 10]:
+            rolling_cols.append(f"{col}_rolling_{window}")
 
     all_predictors = [
         "venue_code",
@@ -237,10 +340,9 @@ def main():
     # Select best features
     best_predictors = select_best_features(matches_rolling, all_predictors, "target")
 
-    # Apply team name mapping for standardisation
-    combined["team"] = combined["team"].map(mapping)
+    # Make predictions with best features
+    combined, precision = make_predictions(matches_rolling, best_predictors)
 
-    # Display results
     print(f"Precision: {precision:.2f}")
     print(f"Predictions shape: {combined.shape}")
     print(combined.head())
